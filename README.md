@@ -1,10 +1,10 @@
 # Automated Docker Deployment Pipeline on AWS
 
-A production-style **CI/CD pipeline** that builds a Node.js API as a Docker image, pushes it to GitHub Container Registry (GHCR), and deploys to an Ubuntu EC2 instance on every push to `main`.
+A production-style **CI/CD pipeline** that builds a Node.js app as a Docker image, pushes it to GitHub Container Registry (GHCR), and deploys to an Ubuntu EC2 instance on every push to `main`.
 
 ---
 
-## Architecture (Option B — Registry-based)
+## Architecture
 
 ```
 Developer pushes to main
@@ -20,8 +20,10 @@ SSH to EC2
         │
         ├── Pull latest image
         ├── Stop & remove old container
-        └── Run new container (port 80 → 3000, restart policy)
+        └── Run new container (port 3000, restart policy)
 ```
+
+On the server, **Nginx** (optional) can serve HTTP/HTTPS (80/443) and reverse-proxy to the container on 3000.
 
 ---
 
@@ -30,13 +32,17 @@ SSH to EC2
 ```
 docker-app-aws-ci-cd/
 ├── app/
-│   ├── server.js              # Express API (GET /, GET /health)
+│   ├── server.js              # Express (static site + /health API)
+│   ├── public/
+│   │   └── index.html
 │   ├── package.json
 │   └── package-lock.json
-├── .github/
-│   └── workflows/
-│       └── deploy.yml         # Build → Push → Deploy
-├── Dockerfile                 # Multi-stage, health check
+├── scripts/
+│   ├── deploy.sh              # SSH deploy (used by GitHub Actions)
+│   └── ec2-initial-setup.sh   # One-time EC2 Docker setup
+├── .github/workflows/
+│   └── deploy.yml
+├── Dockerfile
 ├── .dockerignore
 ├── .gitignore
 └── README.md
@@ -54,9 +60,7 @@ docker build -t devops-portfolio-api:local .
 docker run -d -p 3000:3000 --name app-container devops-portfolio-api:local
 
 # Test
-curl http://localhost:3000/
-# Hello from DevOps Portfolio 🚀
-
+curl -s http://localhost:3000/ | head -5
 curl http://localhost:3000/health
 # {"status":"ok","timestamp":"..."}
 
@@ -66,14 +70,14 @@ docker stop app-container && docker rm app-container
 
 ---
 
-## API
+## API / Routes
 
 | Endpoint   | Response |
 |-----------|----------|
-| `GET /`   | `Hello from DevOps Portfolio 🚀` |
+| `GET /`   | Portfolio landing page (HTML) |
 | `GET /health` | `{"status":"ok","timestamp":"..."}` |
 
-Port: **3000** (inside container). Pipeline maps **host 80 → container 3000** on EC2.
+Port: **3000** (inside container). On EC2, the deploy script maps **host 3000 → container 3000**; Nginx (if used) serves 80/443 and proxies to 3000.
 
 ---
 
@@ -87,8 +91,9 @@ Use an **Ubuntu** EC2 instance (e.g. **t3.micro**). Configure the following.
 |------|------|--------|
 | SSH | 22 | Your IP |
 | HTTP | 80 | 0.0.0.0/0 |
+| HTTPS | 443 | 0.0.0.0/0 *(if using Nginx + SSL)* |
 
-(Application port 3000 is only used inside the host; external traffic uses 80.)
+(Application port 3000 is internal; Nginx serves 80/443 to the internet.)
 
 ### 2. Install Docker on EC2
 
@@ -137,8 +142,8 @@ In **Settings → Secrets and variables → Actions**, add:
 
 | Secret       | Description |
 |-------------|-------------|
-| `EC2_HOST`  | EC2 public IP or DNS (e.g. `3.12.34.56` or `ec2-3-12-34-56.compute-1.amazonaws.com`) |
-| `EC2_SSH_KEY` | Full contents of the **private** key file (e.g. `id_rsa` or `.pem`) used to SSH as `ubuntu` |
+| `EC2_HOST`  | EC2 public IP or public DNS hostname |
+| `EC2_SSH_KEY` | Full contents of the private key file used to SSH as `ubuntu` |
 
 No other secrets are required for the pipeline. For private GHCR, configure `docker login` on EC2 as above; do **not** put the PAT in GitHub Actions for this design.
 
@@ -146,19 +151,9 @@ No other secrets are required for the pipeline. For private GHCR, configure `doc
 
 - **Push to `main`** → workflow runs.
 - **Build job**: checkout → build image → push to GHCR with tag `latest` and `sha-<short-sha>`.
-- **Deploy job**: SSH to EC2 → `docker pull` → `docker stop` / `docker rm` old `app-container` → `docker run` with `-p 80:3000`, `--name app-container`, `--restart unless-stopped`.
+- **Deploy job**: SSH to EC2 → `docker pull` → `docker stop` / `docker rm` old `app-container` → `docker run` with `-p 3000:3000`, `--name app-container`, `--restart unless-stopped`.
 
 If `EC2_HOST` or `EC2_SSH_KEY` is missing, the deploy job is skipped (build and push still run).
-
----
-
-## Deliverables checklist
-
-- [x] Node.js Express API in `app/`
-- [x] Dockerfile (multi-stage, non-root, health check)
-- [x] GitHub Actions workflow: build → push to GHCR → deploy via SSH
-- [x] Deployment and EC2 setup instructions (this README)
-- [ ] Screenshots (you add): running GitHub Actions pipeline, app in browser on EC2
 
 ---
 
@@ -167,6 +162,7 @@ If `EC2_HOST` or `EC2_SSH_KEY` is missing, the deploy job is skipped (build and 
 - **Docker**: multi-stage build, `.dockerignore`, non-root user, `HEALTHCHECK`, `--restart unless-stopped`.
 - **Pipeline**: image tagged as `latest` and `sha-<short-sha>`, GHCR cache, OCI labels.
 - **API**: `/health` for health checks.
+- **Nginx**: reverse proxy config (HTTP + HTTPS with Let's Encrypt); first-time SSL config in `nginx/`.
 
 ---
 
@@ -182,11 +178,12 @@ If `EC2_HOST` or `EC2_SSH_KEY` is missing, the deploy job is skipped (build and 
 
 | Component        | Technology           |
 |-----------------|----------------------|
-| Application     | Node.js + Express    |
-| Container       | Docker (Alpine), `--restart unless-stopped` (restarts container on crash) |
+| Application     | Node.js + Express (static + API) |
+| Container       | Docker (Alpine), `--restart unless-stopped` |
 | CI/CD           | GitHub Actions       |
 | Registry        | GitHub Container Registry |
 | Server          | AWS EC2 (Ubuntu)     |
+| Reverse proxy   | Nginx (optional, HTTP/HTTPS + Let's Encrypt) |
 
 ---
 
